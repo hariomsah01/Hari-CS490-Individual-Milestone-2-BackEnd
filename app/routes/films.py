@@ -89,3 +89,75 @@ def availability(film_id: int):
     with current_app.config["ENGINE"].begin() as conn:
         row = conn.execute(sql, {"fid": film_id, "sid": store_id}).mappings().first()
     return jsonify(data=(dict(row) if row else None))
+
+
+@bp.get("/search")
+def search_films():
+    """
+    Search films by title (q), actor's full/partial name (actor),
+    or genre/category name (category). Supports pagination.
+    query params:
+      - q: text (search in film.title)
+      - actor: text (matches first_name/last_name)
+      - category: text (category.name)
+      - page: 1-based page number (default 1)
+      - pageSize: items per page (default 12)
+    """
+    q = (request.args.get("q") or "").strip()
+    actor = (request.args.get("actor") or "").strip()
+    category = (request.args.get("category") or "").strip()
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = min(max(int(request.args.get("pageSize", 12)), 1), 50)
+    offset = (page - 1) * page_size
+
+    # Build WHERE and JOINs based on mode
+    where = []
+    joins = []
+    params = {"limit": page_size, "offset": offset}
+
+    if actor:
+        joins.append("JOIN film_actor fa ON f.film_id = fa.film_id")
+        joins.append("JOIN actor a ON a.actor_id = fa.actor_id")
+        where.append("(CONCAT(a.first_name,' ',a.last_name) LIKE :actor)")
+        params["actor"] = f"%{actor}%"
+    elif category:
+        joins.append("JOIN film_category fc ON f.film_id = fc.film_id")
+        joins.append("JOIN category c ON c.category_id = fc.category_id")
+        where.append("(c.name LIKE :category)")
+        params["category"] = f"%{category}%"
+    else:
+        # default to title search (q). If q is empty, return newest titles by release_year.
+        if q:
+            where.append("(f.title LIKE :q)")
+            params["q"] = f"%{q}%"
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+    joins_sql = "\n".join(joins)
+
+    sql = text(f"""
+        SELECT f.film_id, f.title, f.description, f.release_year, f.length, f.rating
+        FROM film f
+        {joins_sql}
+        {where_sql}
+        ORDER BY f.title
+        LIMIT :limit OFFSET :offset
+    """)
+
+    # (optional) total count for UI "Next" disable
+    count_sql = text(f"""
+        SELECT COUNT(*) AS total
+        FROM film f
+        {joins_sql}
+        {where_sql}
+    """)
+
+    with current_app.config["ENGINE"].begin() as conn:
+        rows = conn.execute(sql, params).mappings().all()
+        total = conn.execute(count_sql, params).scalar() or 0
+
+    return jsonify(
+        data=[dict(r) for r in rows],
+        page=page,
+        pageSize=page_size,
+        total=total
+    )
