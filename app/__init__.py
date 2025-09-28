@@ -23,9 +23,11 @@ def create_app():
     from .routes.films import bp as films_bp
     from .routes.customers import bp as customers_bp
     from .routes.rentals import bp as rentals_bp
+    from .routes.actors import bp as actors_bp 
     app.register_blueprint(films_bp, url_prefix="/api/films")
     app.register_blueprint(customers_bp, url_prefix="/api/customers")
     app.register_blueprint(rentals_bp, url_prefix="/api/rentals")
+    app.register_blueprint(actors_bp, url_prefix="/api/actors")
 
     @app.errorhandler(Exception)
     def on_error(e):
