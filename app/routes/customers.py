@@ -4,21 +4,64 @@ bp = Blueprint("customers", __name__)
 
 @bp.get("/")
 def list_customers():
-    q = request.args.get("q", ""); cid = request.args.get("id", "")
+    q = (request.args.get("q", "") or "").strip()
+    cid_raw = (request.args.get("id", "") or "").strip()
+
+    # paging
     page_size = max(1, min(100, int(request.args.get("pageSize", 10))))
-    page = max(1, int(request.args.get("page", 1))); offset = (page-1)*page_size
-    sql = text("""
-        SELECT customer_id, first_name, last_name, email, active
-        FROM customer
-        WHERE (:cid <> '' AND customer_id = :cid)
-           OR (:cid = '' AND (first_name LIKE CONCAT('%', :q, '%')
-                           OR  last_name  LIKE CONCAT('%', :q, '%')))
-        ORDER BY last_name, first_name
-        LIMIT :limit OFFSET :offset
-    """)
+    page = max(1, int(request.args.get("page", 1)))
+    offset = (page - 1) * page_size
+
+    # helpers
+    def to_int_or_none(s):
+        try:
+            return int(s)
+        except Exception:
+            return None
+
+    cid = to_int_or_none(cid_raw)
+    q_int = to_int_or_none(q)
+    like = f"%{q}%"
+
     with current_app.config["ENGINE"].begin() as conn:
-        rows = conn.execute(sql, {"cid": cid, "q": q, "limit": page_size, "offset": offset}).mappings().all()
+        # 1) If explicit id=... is passed, search by exact ID only
+        if cid is not None:
+            sql = text("""
+                SELECT customer_id, first_name, last_name, email, active
+                FROM customer
+                WHERE customer_id = :cid
+                ORDER BY last_name, first_name
+                LIMIT :limit OFFSET :offset
+            """)
+            rows = conn.execute(sql, {"cid": cid, "limit": page_size, "offset": offset}).mappings().all()
+
+        # 2) Else if q is numeric, search by ID **or** by name containing q
+        elif q_int is not None:
+            sql = text("""
+                SELECT customer_id, first_name, last_name, email, active
+                FROM customer
+                WHERE customer_id = :q_int
+                   OR first_name LIKE :like
+                   OR last_name  LIKE :like
+                ORDER BY last_name, first_name
+                LIMIT :limit OFFSET :offset
+            """)
+            rows = conn.execute(sql, {"q_int": q_int, "like": like, "limit": page_size, "offset": offset}).mappings().all()
+
+        # 3) Otherwise, normal name search
+        else:
+            sql = text("""
+                SELECT customer_id, first_name, last_name, email, active
+                FROM customer
+                WHERE first_name LIKE :like
+                   OR last_name  LIKE :like
+                ORDER BY last_name, first_name
+                LIMIT :limit OFFSET :offset
+            """)
+            rows = conn.execute(sql, {"like": like, "limit": page_size, "offset": offset}).mappings().all()
+
     return jsonify(data=[dict(r) for r in rows], pageSize=page_size, offset=offset)
+
 
 @bp.get("/<int:cid>")
 def customer_detail(cid: int):
@@ -41,3 +84,5 @@ def customer_detail(cid: int):
     if not cust: return jsonify(error="Not found"), 404
     data = dict(cust); data["rentals"] = [dict(r) for r in hist]
     return jsonify(data=data)
+
+
